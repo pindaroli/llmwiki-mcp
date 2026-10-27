@@ -271,11 +271,23 @@ def strip_cjk_sections_if_bare_body(text: str, cfg: dict[str, Any] | None = None
     return CJK_SECTION_RE.sub("", text).rstrip() + "\n"
 
 
+import threading
+_LOCK_STATE = threading.local()
+
 @contextlib.contextmanager
-def meta_write_lock(cfg: dict[str, Any], root: Path | None = None) -> Iterator[None]:
-    """Acquisisce un lock esclusivo (`fcntl.flock`) su `wiki/_meta/.lock`."""
+def meta_write_lock(cfg: dict[str, Any] | None = None, root: Path | None = None) -> Iterator[None]:
+    """Acquisisce un lock esclusivo rientrante (`fcntl.flock`) su `wiki/_meta/.lock`."""
+    depth = getattr(_LOCK_STATE, "depth", 0)
+    if depth > 0:
+        _LOCK_STATE.depth = depth + 1
+        try:
+            yield
+        finally:
+            _LOCK_STATE.depth -= 1
+        return
+
     base = root or get_project_root(cfg)
-    meta_rel = cfg.get("paths", {}).get("meta", "wiki/_meta")
+    meta_rel = cfg.get("paths", {}).get("meta", "wiki/_meta") if isinstance(cfg, dict) else "wiki/_meta"
     meta_dir = Path(meta_rel)
     if not meta_dir.is_absolute():
         meta_dir = base / meta_dir
@@ -283,9 +295,11 @@ def meta_write_lock(cfg: dict[str, Any], root: Path | None = None) -> Iterator[N
     lock_file = meta_dir / ".lock"
     with open(lock_file, "a+", encoding="utf-8") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        _LOCK_STATE.depth = 1
         try:
             yield
         finally:
+            _LOCK_STATE.depth = 0
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
