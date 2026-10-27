@@ -1,3 +1,6 @@
+# [k8s-lab-fork-v0.9.1]
+from llmwiki.k8slab_dirs import list_kb_paths as _k8s_list_kb_paths
+
 # === K8S-LAB FORK EXTENSION (v0.9.1-k8slab) ===
 from llmwiki.k8slab_dirs import (
     iter_kb_markdown_files,

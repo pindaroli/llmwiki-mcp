@@ -267,3 +267,23 @@ if callable(_orig_defaults):
             },
         )
         return d
+
+
+# [k8s-lab-fork-v0.9.1]
+from llmwiki.k8slab_dirs import DEFAULT_CONTENT_DIRS, get_content_dirs as _k8s_get_content_dirs
+
+if "_orig_load_config" not in globals() and "load_config" in globals():
+    _orig_load_config = load_config
+
+    def load_config(*args, **kwargs):
+        cfg = _orig_load_config(*args, **kwargs)
+        if isinstance(cfg, dict):
+            paths = cfg.setdefault("paths", {})
+            if isinstance(paths, dict) and "content_dirs" not in paths:
+                # Se esistono le cartelle k8s-lab sul filesystem, abilita il default multi-dir
+                root = kwargs.get("root") or cfg.get("_root")
+                from pathlib import Path as _P
+                base = _P(root).resolve() if root else _P.cwd().resolve()
+                if (base / "wiki" / "entities").is_dir() or (base / "wiki" / "patterns").is_dir():
+                    paths["content_dirs"] = dict(DEFAULT_CONTENT_DIRS)
+        return cfg

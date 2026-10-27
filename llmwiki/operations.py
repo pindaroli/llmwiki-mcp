@@ -22,6 +22,14 @@ values should be JSON-serialisable (dicts, lists, strings, numbers).
 """
 
 from __future__ import annotations
+# [k8s-lab-fork-v0.9.1]
+from llmwiki.k8slab_dirs import (
+    list_kb_paths as _k8s_list_kb_paths,
+    resolve_slug_path as _k8s_resolve_slug_path,
+    normalize_k8slab_frontmatter as _k8s_normalize_fm,
+    meta_write_lock as _k8s_meta_write_lock,
+)
+
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -661,3 +669,19 @@ def kb_list(cfg=None, tag=None):
     base = Path(cfg["base_dir"]) if isinstance(cfg, dict) and "base_dir" in cfg else cfg
     res = _op_list(base, tag=tag)
     return res.get("articles", [])
+
+
+# Wrapper atomico con fcntl.flock per le scritture concorrenti su _meta/index.json
+for _op_name in ("kb_rebuild_index", "kb_compile", "kb_file_answer", "kb_ingest"):
+    if _op_name in globals() and callable(globals()[_op_name]):
+        _orig_fn = globals()[_op_name]
+
+        def _make_locked_fn(fn):
+            def _locked_wrapper(cfg, *args, **kwargs):
+                with _k8s_meta_write_lock(cfg):
+                    return fn(cfg, *args, **kwargs)
+            _locked_wrapper.__name__ = fn.__name__
+            _locked_wrapper.__doc__ = fn.__doc__
+            return _locked_wrapper
+
+        globals()[_op_name] = _make_locked_fn(_orig_fn)
