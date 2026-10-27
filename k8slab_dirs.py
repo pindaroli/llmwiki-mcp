@@ -34,6 +34,16 @@ CJK_SECTION_RE = re.compile(
     re.DOTALL,
 )
 
+DEFAULT_CONTENT_DIRS_ORDER = [
+    ("concept", "wiki/concepts"),
+    ("entity", "wiki/entities"),
+    ("pattern", "wiki/patterns"),
+    ("workflow", "wiki/workflows"),
+    ("procedure", "wiki/procedures"),
+    ("plan", "wiki/plans"),
+]
+DEFAULT_CONTENT_DIRS = DEFAULT_CONTENT_DIRS_ORDER
+
 
 def get_project_root(cfg: dict[str, Any] | None = None) -> Path:
     """Risolve la root del progetto a partire da cfg['_root'], LLMWIKI_CONFIG o CWD."""
