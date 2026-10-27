@@ -200,6 +200,8 @@ def iter_kb_markdown_files(
 
     return collected
 
+list_kb_paths = iter_kb_markdown_files
+
 
 def detect_category_for_path(cfg: dict[str, Any], md_path: Path, root: Path | None = None) -> str:
     """Restituisce la categoria associata alla directory padre di `md_path`."""
