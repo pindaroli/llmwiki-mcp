@@ -7,8 +7,10 @@ from pathlib import Path
 import yaml
 
 
-def load_config(base_dir: Path | None = None) -> dict:
+def load_config(base_dir: Path | dict | None = None) -> dict:
     """Load config.yaml from the project root."""
+    if isinstance(base_dir, dict):
+        return base_dir
     if base_dir is None:
         base_dir = Path.cwd()
     config_path = base_dir / "config.yaml"

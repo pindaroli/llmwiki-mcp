@@ -16,7 +16,7 @@ Scopo:
        - rimozione opzionale in memoria di eventuali sezioni CJK residue (`## 中文`, `## 日本語`)
          quando il profilo lingua è `bare_body: true`.
     4. Scrittura atomica (`tempfile` + `os.replace`) protetta da file-locking esclusivo
-       (`fcntl.flock` su `wiki/_meta/.lock`) per `index.json`, `_index.md` e `log.md`.
+       (`fcntl.flock` su `wiki/_meta/.lock`) per l'indice e i file generati.
 
 Utilizzo:
   python3 apply_llmwiki_k8slab_fork.py /percorso/al/clone/di/llmwiki [--verify]
@@ -25,12 +25,12 @@ Utilizzo:
 from __future__ import annotations
 
 import argparse
+import py_compile
 import re
 import sys
 from pathlib import Path
 
-K8SLAB_DIRS_MODULE = '''\
-"""
+K8SLAB_DIRS_MODULE = r'''"""
 llmwiki.k8slab_dirs — Estensione multi-cartella, filtro piani attivi, normalizzazione
 frontmatter e file-locking atomico per k8s-lab (v0.9.1-k8slab).
 """
@@ -48,9 +48,9 @@ from typing import Any, Iterator
 import yaml
 
 ACTIVE_PLAN_STATUSES = {"active", "approved", "in_progress"}
-FRONTMATTER_RE = re.compile(r"^---\\s*\\n(.*?)\\n---\\s*\\n?(.*)$", re.DOTALL)
+FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 CJK_SECTION_RE = re.compile(
-    r"\\n##\\s+(?:中文|日本語)\\b.*?(?=\\n##\\s+(?!中文|日本語)|\\Z)",
+    r"\n##\s+(?:中文|日本語)\b.*?(?=\n##\s+(?!中文|日本語)|\Z)",
     re.DOTALL,
 )
 
@@ -123,7 +123,7 @@ def normalize_k8slab_frontmatter(
     """
     Normalizza in modo non distruttivo i metadati di k8s-lab verso lo schema atteso da llmwiki:
       - `type` -> `category` (se `category` è assente)
-      - `last_updated` or `created_at` -> `updated` (se `updated` è assente)
+      - `last_updated` o `created_at` -> `updated` (se `updated` è assente)
       - rimuove il prefisso `#` da ogni elemento di `tags`
       - garantisce sempre la presenza di `title`
     """
@@ -300,7 +300,7 @@ def strip_cjk_sections_if_bare_body(text: str, cfg: dict[str, Any] | None = None
 def meta_write_lock(cfg: dict[str, Any], root: Path | None = None) -> Iterator[None]:
     """
     Acquisisce un file-lock esclusivo (`fcntl.flock`) su `wiki/_meta/.lock`
-    per proteggere le scritture concorrenti su `index.json`, `_index.md` e `log.md`.
+    per proteggere le scritture concorrenti.
     """
     base = root or get_project_root(cfg)
     meta_rel = cfg.get("paths", {}).get("meta", "wiki/_meta")
@@ -399,7 +399,6 @@ from llmwiki.k8slab_dirs import (
     atomic_write_text,
 )
 
-# Avvolge kb_rebuild_index, kb_compile, kb_file_answer, kb_ingest con il lock atomico su _meta/.lock
 for _mut_fn_name in ("kb_rebuild_index", "kb_compile", "kb_file_answer", "kb_ingest"):
     _orig_mut_fn = globals().get(_mut_fn_name)
     if callable(_orig_mut_fn):
@@ -423,12 +422,26 @@ from llmwiki.k8slab_dirs import (
 """
 
 
+def _insert_after_future_imports(original_text: str, hook_code: str) -> str:
+    """
+    Inserisce `hook_code` subito dopo eventuali `from __future__ import ...` e docstring
+    di modulo, così da non violare mai la sintassi Python (SyntaxError: from __future__
+    imports must occur at the beginning of the file).
+    """
+    future_matches = list(
+        re.finditer(r"^[ \t]*from[ \t]+__future__[ \t]+import[ \t]+[^\n]+\n", original_text, re.M)
+    )
+    if future_matches:
+        insert_pos = future_matches[-1].end()
+        return original_text[:insert_pos] + "\n" + hook_code.lstrip() + "\n" + original_text[insert_pos:]
+    return hook_code.lstrip() + "\n" + original_text
+
+
 def patch_search_py(search_path: Path) -> list[str]:
     """Aggiorna llmwiki/search.py per usare iter_kb_markdown_files su tutte le content_dirs."""
     changes: list[str] = []
     text = search_path.read_text(encoding="utf-8")
 
-    # Sostituisce il pattern upstream `list(concepts_dir.glob("*.md")) + list(outputs_dir.glob("*.md"))`
     pattern_combined = re.compile(
         r"list\(\s*concepts_dir\.glob\(\s*['\"]\*\.md['\"]\s*\)\s*\)\s*\+\s*list\(\s*outputs_dir\.glob\(\s*['\"]\*\.md['\"]\s*\)\s*\)"
     )
@@ -437,16 +450,17 @@ def patch_search_py(search_path: Path) -> list[str]:
             "iter_kb_markdown_files(cfg, include_outputs=True)",
             text,
         )
-        changes.append("search.py: sostituito concepts_dir.glob + outputs_dir.glob con iter_kb_markdown_files(cfg, include_outputs=True)")
+        changes.append(
+            "search.py: sostituito concepts_dir.glob + outputs_dir.glob con iter_kb_markdown_files(cfg, include_outputs=True)"
+        )
 
-    # Sostituisce eventuali `concepts_dir.glob("*.md")` residui
     pattern_concepts_glob = re.compile(r"concepts_dir\.glob\(\s*['\"]\*\.md['\"]\s*\)")
     if pattern_concepts_glob.search(text):
         text = pattern_concepts_glob.sub("iter_kb_markdown_files(cfg, include_outputs=False)", text)
         changes.append("search.py: sostituito concepts_dir.glob('*.md') con iter_kb_markdown_files(cfg)")
 
     if CONFIG_HOOK_MARKER not in text:
-        text = SEARCH_HOOK_CODE.lstrip() + "\n" + text
+        text = _insert_after_future_imports(text, SEARCH_HOOK_CODE)
         changes.append("search.py: aggiunto import da llmwiki.k8slab_dirs")
 
     search_path.write_text(text, encoding="utf-8")
@@ -458,13 +472,13 @@ def patch_operations_py(ops_path: Path) -> list[str]:
     changes: list[str] = []
     text = ops_path.read_text(encoding="utf-8")
 
-    # 1. Sostituisce `concepts_dir.glob("*.md")` con `iter_kb_markdown_files(cfg)`
-    pattern_glob = re.compile(r"(?:sorted\()?list\(concepts_dir\.glob\(\s*['\"]\*\.md['\"]\s*\)\)|concepts_dir\.glob\(\s*['\"]\*\.md['\"]\s*\)")
+    pattern_glob = re.compile(
+        r"(?:sorted\()?list\(concepts_dir\.glob\(\s*['\"]\*\.md['\"]\s*\)\)|concepts_dir\.glob\(\s*['\"]\*\.md['\"]\s*\)"
+    )
     if pattern_glob.search(text):
         text = pattern_glob.sub("iter_kb_markdown_files(cfg)", text)
         changes.append("operations.py: sostituito concepts_dir.glob('*.md') con iter_kb_markdown_files(cfg)")
 
-    # 2. Sostituisce `Path(cfg["paths"]["concepts"]) / f"{slug}.md"` e `concepts_dir / f"{slug}.md"`
     pattern_slug_direct = re.compile(
         r"(?:Path\(\s*cfg\[['\"]paths['\"]\]\[['\"]concepts['\"]\]\s*\)|concepts_dir)\s*/\s*f['\"]\{slug\}\.md['\"]"
     )
@@ -472,14 +486,16 @@ def patch_operations_py(ops_path: Path) -> list[str]:
         text = pattern_slug_direct.sub("resolve_slug_path(cfg, slug)", text)
         changes.append("operations.py: sostituito path fisso concepts/{slug}.md con resolve_slug_path(cfg, slug)")
 
-    # 3. Sostituisce scritture su index_path / index_md_path con atomic_write_text
-    pattern_write = re.compile(r"(\b(?:index_path|index_json_path|index_md_path|out_path|article_path|target_path))\s*\.\s*write_text\(([^)]+)\)")
+    pattern_write = re.compile(
+        r"(\b(?:index_path|index_json_path|index_md_path|out_path|article_path|target_path))\s*\.\s*write_text\(([^)]+)\)"
+    )
     if pattern_write.search(text):
         text = pattern_write.sub(r"atomic_write_text(\1, \2)", text)
         changes.append("operations.py: convertite le scritture file in atomic_write_text()")
 
     if CONFIG_HOOK_MARKER not in text:
-        text = text.rstrip() + "\n\n" + OPERATIONS_HOOK_CODE.lstrip()
+        text = _insert_after_future_imports(text, OPERATIONS_HOOK_CODE.split("\nfor _mut_fn_name")[0])
+        text = text.rstrip() + "\n\nfor _mut_fn_name" + OPERATIONS_HOOK_CODE.split("\nfor _mut_fn_name")[1]
         changes.append("operations.py: registrati helper k8slab_dirs e wrapper meta_write_lock")
 
     ops_path.write_text(text, encoding="utf-8")
@@ -499,7 +515,7 @@ def patch_taxonomy_py(tax_path: Path) -> list[str]:
         changes.append("taxonomy.py: sostituito concepts_dir.glob('*.md') con iter_kb_markdown_files(cfg)")
 
     if CONFIG_HOOK_MARKER not in text:
-        text = TAXONOMY_HOOK_CODE.lstrip() + "\n" + text
+        text = _insert_after_future_imports(text, TAXONOMY_HOOK_CODE)
         changes.append("taxonomy.py: aggiunto import da llmwiki.k8slab_dirs")
 
     tax_path.write_text(text, encoding="utf-8")
@@ -527,41 +543,34 @@ def apply_fork_patches(repo_dir: Path) -> list[str]:
 
     applied: list[str] = []
 
-    # 1. Scrive il modulo llmwiki/k8slab_dirs.py
     ext_path = pkg_dir / "k8slab_dirs.py"
-    standalone_src = repo_dir / "k8slab_dirs.py"
-    if standalone_src.is_file():
-        ext_path.write_text(standalone_src.read_text(encoding="utf-8"), encoding="utf-8")
-    else:
-        ext_path.write_text(K8SLAB_DIRS_MODULE, encoding="utf-8")
+    ext_path.write_text(K8SLAB_DIRS_MODULE, encoding="utf-8")
+    py_compile.compile(str(ext_path), doraise=True)
     applied.append(f"Creato/aggiornato {ext_path.relative_to(repo_dir)}")
 
-    # 2. Patch config.py, search.py, operations.py, taxonomy.py
-    if (pkg_dir / "config.py").is_file():
-        applied.extend(patch_config_py(pkg_dir / "config.py"))
-    if (pkg_dir / "search.py").is_file():
-        applied.extend(patch_search_py(pkg_dir / "search.py"))
-    if (pkg_dir / "operations.py").is_file():
-        applied.extend(patch_operations_py(pkg_dir / "operations.py"))
-    if (pkg_dir / "taxonomy.py").is_file():
-        applied.extend(patch_taxonomy_py(pkg_dir / "taxonomy.py"))
+    for mod_name, patch_fn in (
+        ("config.py", patch_config_py),
+        ("search.py", patch_search_py),
+        ("operations.py", patch_operations_py),
+        ("taxonomy.py", patch_taxonomy_py),
+    ):
+        mod_path = pkg_dir / mod_name
+        if mod_path.is_file():
+            applied.extend(patch_fn(mod_path))
+            py_compile.compile(str(mod_path), doraise=True)
 
     return applied
 
 
 def run_self_test(repo_dir: Path) -> None:
     """Esegue un test funzionale in una directory temporanea simulando l'albero k8s-lab."""
+    import importlib
     import tempfile
 
     sys.path.insert(0, str(repo_dir))
-    from llmwiki.k8slab_dirs import (
-        atomic_write_text,
-        iter_kb_markdown_files,
-        meta_write_lock,
-        normalize_k8slab_frontmatter,
-        parse_markdown_frontmatter,
-        resolve_slug_path,
-    )
+    import llmwiki.k8slab_dirs as kd
+
+    importlib.reload(kd)
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -583,53 +592,55 @@ def run_self_test(repo_dir: Path) -> None:
             "language": {"profile": "single", "bare_body": True},
         }
 
-        # Crea documenti campione per ogni categoria
         (root / "wiki/entities").mkdir(parents=True)
         (root / "wiki/patterns").mkdir(parents=True)
         (root / "wiki/plans").mkdir(parents=True)
         (root / "wiki/concepts").mkdir(parents=True)
 
-        atomic_write_text(
+        kd.atomic_write_text(
             root / "wiki/entities/truenas.md",
             "---\ntitle: TrueNAS\ntype: entity\nlast_updated: 2026-10-27\ntags:\n  - '#storage'\n---\nNodo ZFS.\n",
         )
-        atomic_write_text(
+        kd.atomic_write_text(
             root / "wiki/patterns/mcp-registry-package-pattern.md",
             "---\ntitle: MCP Pattern\ntype: pattern\ntags:\n  - '#mcp'\n---\nLink a [[truenas]].\n",
         )
-        atomic_write_text(
+        kd.atomic_write_text(
             root / "wiki/plans/active-plan.md",
             "---\ntitle: Piano Attivo\nstatus: active\n---\nPiano attivo.\n",
         )
-        atomic_write_text(
+        kd.atomic_write_text(
             root / "wiki/plans/old-plan.md",
             "---\ntitle: Piano Vecchio\nstatus: completed\n---\nPiano archiviato.\n",
         )
 
-        files = iter_kb_markdown_files(cfg, root)
+        files = kd.iter_kb_markdown_files(cfg, root)
         stems = {f.stem for f in files}
         assert stems == {"truenas", "mcp-registry-package-pattern", "active-plan"}, (
             f"Filtro multi-cartella o piani attivi errato: {stems}"
         )
 
-        resolved_entity = resolve_slug_path(cfg, "truenas", root=root)
+        resolved_entity = kd.resolve_slug_path(cfg, "truenas", root=root)
         assert resolved_entity == root / "wiki/entities/truenas.md"
 
-        new_pattern_target = resolve_slug_path(
+        new_pattern_target = kd.resolve_slug_path(
             cfg, "new-pattern", category="pattern", root=root, for_write=True
         )
         assert new_pattern_target == root / "wiki/patterns/new-pattern.md"
 
-        meta, _ = parse_markdown_frontmatter((root / "wiki/entities/truenas.md").read_text())
-        norm = normalize_k8slab_frontmatter(meta, default_category="entity", slug="truenas")
+        meta, _ = kd.parse_markdown_frontmatter((root / "wiki/entities/truenas.md").read_text())
+        norm = kd.normalize_k8slab_frontmatter(meta, default_category="entity", slug="truenas")
         assert norm["category"] == "entity"
         assert norm["updated"] == "2026-10-27"
         assert norm["tags"] == ["storage"]
 
-        with meta_write_lock(cfg, root):
+        sample_cjk = "Testo IT\n\n## 中文\nTesto ZH\n\n## 日本語\nTesto JA\n"
+        assert kd.strip_cjk_sections_if_bare_body(sample_cjk, cfg) == "Testo IT\n"
+
+        with kd.meta_write_lock(cfg, root):
             assert (root / "wiki/_meta/.lock").is_file()
 
-    print("SELF-TEST OK: tutte le asserzioni multi-cartella, filtro piani, frontmatter e lock superate!")
+    print("SELF-TEST OK: tutte le asserzioni multi-cartella, filtro piani, frontmatter, CJK e lock superate!")
 
 
 def main() -> None:
@@ -640,12 +651,12 @@ def main() -> None:
         "repo_dir",
         nargs="?",
         default=".",
-        help="Percorso alla root del repository forkato di llmwiki (default: directory corrente)",
+        help="Percorso alla root del repository llmwiki forkato (default: directory corrente)",
     )
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="Esegue il self-test funzionale subito dopo l'applicazione della patch",
+        help="Esegue la suite di self-test dopo aver applicato le patch",
     )
     args = parser.parse_args()
 

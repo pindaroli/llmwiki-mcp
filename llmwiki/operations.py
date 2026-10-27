@@ -228,25 +228,23 @@ def _op_get_sections(base_dir: Path, slug: str) -> dict:
     }
 
 
-def _op_list(base_dir: Path, tag: str | None = None) -> dict:
+def _op_list(base_dir: Path | dict, tag: str | None = None) -> dict:
     import frontmatter
     from .config import load_config
+    from .k8slab_dirs import normalize_k8slab_frontmatter, iter_kb_markdown_files
 
     cfg = load_config(base_dir)
-    concepts_dir = Path(cfg["paths"]["concepts"])
-    if not concepts_dir.exists():
-        return {"articles": []}
-
     articles = []
     for md_file in sorted(iter_kb_markdown_files(cfg)):
         post = frontmatter.load(str(md_file))
-        tags = post.metadata.get("tags", [])
+        meta = normalize_k8slab_frontmatter(post.metadata, default_category="concept", slug=md_file.stem)
+        tags = meta.get("tags", [])
         if tag and tag not in tags:
             continue
         articles.append({
             "slug": md_file.stem,
-            "title": post.metadata.get("title", md_file.stem),
-            "summary": post.metadata.get("summary", ""),
+            "title": meta.get("title", md_file.stem),
+            "summary": meta.get("summary", ""),
             "tags": tags,
         })
     return {"articles": articles}
@@ -651,3 +649,15 @@ for _mut_fn_name in ("kb_rebuild_index", "kb_compile", "kb_file_answer", "kb_ing
             _locked_wrapper.__doc__ = _fn.__doc__
             return _locked_wrapper
         globals()[_mut_fn_name] = _make_locked_fn(_orig_mut_fn)
+
+def kb_rebuild_index(cfg=None):
+    from pathlib import Path
+    base = Path(cfg["base_dir"]) if isinstance(cfg, dict) and "base_dir" in cfg else cfg
+    with meta_write_lock(cfg if isinstance(cfg, dict) else {"_root": base}):
+        return _op_rebuild_index(base)
+
+def kb_list(cfg=None, tag=None):
+    from pathlib import Path
+    base = Path(cfg["base_dir"]) if isinstance(cfg, dict) and "base_dir" in cfg else cfg
+    res = _op_list(base, tag=tag)
+    return res.get("articles", [])

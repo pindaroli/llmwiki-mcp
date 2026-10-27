@@ -341,15 +341,17 @@ def rebuild_index(base_dir: Path | None = None):
     meta_dir = Path(cfg["paths"]["meta"])
     meta_dir.mkdir(parents=True, exist_ok=True)
 
+    from .k8slab_dirs import iter_kb_markdown_files, normalize_k8slab_frontmatter
     index_entries = []
-    for md_file in sorted(concepts_dir.glob("*.md")):
+    for md_file in sorted(iter_kb_markdown_files(cfg)):
         post = frontmatter.load(str(md_file))
+        norm_meta = normalize_k8slab_frontmatter(post.metadata, default_category="concept", slug=md_file.stem)
         entry = {
             "slug": md_file.stem,
-            "title": post.metadata.get("title", md_file.stem),
-            "summary": post.metadata.get("summary", ""),
-            "tags": post.metadata.get("tags", []),
-            "sources": post.metadata.get("sources", []),
+            "title": norm_meta.get("title", md_file.stem),
+            "summary": norm_meta.get("summary", ""),
+            "tags": norm_meta.get("tags", []),
+            "sources": norm_meta.get("sources", []),
         }
         index_entries.append(entry)
 
@@ -382,11 +384,11 @@ def rebuild_index(base_dir: Path | None = None):
 
     # Build alias map (must come before backlinks)
     from .resolve import build_aliases, save_aliases
-    aliases = build_aliases(concepts_dir)
+    aliases = build_aliases(cfg)
     save_aliases(aliases, meta_dir)
 
     # Write backlinks map (uses aliases for correct resolution)
-    _build_backlinks(concepts_dir, meta_dir)
+    _build_backlinks(cfg, meta_dir)
 
     from .hooks import emit
     emit("index_rebuilt", article_count=len(index_entries))
@@ -735,7 +737,7 @@ def _assemble_sections(
     return "\n\n".join(parts)
 
 
-def _build_backlinks(concepts_dir: Path, meta_dir: Path):
+def _build_backlinks(concepts_dir: Path | dict, meta_dir: Path):
     """Build a backlinks map from wiki-link references.
 
     Uses alias resolution so that [[参禅]] correctly maps to the
@@ -743,12 +745,14 @@ def _build_backlinks(concepts_dir: Path, meta_dir: Path):
     """
     import re
     from .resolve import load_aliases, resolve_link
+    from .k8slab_dirs import iter_kb_markdown_files
 
+    cfg = concepts_dir if isinstance(concepts_dir, dict) else load_config(concepts_dir)
     aliases = load_aliases(meta_dir)
     backlinks: dict[str, list[str]] = {}
     link_pattern = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 
-    for md_file in concepts_dir.glob("*.md"):
+    for md_file in sorted(iter_kb_markdown_files(cfg)):
         content = md_file.read_text()
         slug = md_file.stem
         for match in link_pattern.finditer(content):

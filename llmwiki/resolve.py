@@ -37,7 +37,7 @@ def _get_converters():
     return _t2s, _s2t
 
 
-def build_aliases(concepts_dir: Path) -> dict[str, str]:
+def build_aliases(concepts_dir: Path | dict) -> dict[str, str]:
     """Build alias map from all article metadata.
 
     For each article, registers these aliases → canonical slug:
@@ -50,11 +50,11 @@ def build_aliases(concepts_dir: Path) -> dict[str, str]:
     All lookups are case-insensitive and whitespace-normalized.
     """
     aliases: dict[str, str] = {}
+    from .config import load_config
+    from .k8slab_dirs import iter_kb_markdown_files
+    cfg = concepts_dir if isinstance(concepts_dir, dict) else load_config(concepts_dir)
 
-    if not concepts_dir.exists():
-        return aliases
-
-    for md_file in sorted(concepts_dir.glob("*.md")):
+    for md_file in sorted(iter_kb_markdown_files(cfg)):
         slug = md_file.stem
         post = frontmatter.load(str(md_file))
         title = post.metadata.get("title", slug)

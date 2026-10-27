@@ -1,18 +1,6 @@
 """
-llmwiki.k8slab_dirs — Modulo core per il fork k8s-lab di llmwiki (v0.9.1-k8slab).
-
-Funzionalità fornite:
-  1. `get_content_dirs(cfg, root)`: risolve la mappa `{category: Path}` da `paths.content_dirs`.
-  2. `iter_kb_markdown_files(cfg, root, include_outputs)`: scansiona tutte le cartelle
-     semantiche di k8s-lab (`concepts`, `entities`, `patterns`, `workflows`, `procedures`,
-     `plans`), filtrando per `plans` solo i documenti con `status: active | approved | in_progress`.
-  3. `resolve_slug_path(cfg, slug, category, root, for_write)`: risolve qualsiasi `[[slug]]`
-     attraverso tutte le cartelle configurate e indirizza i nuovi articoli nella cartella
-     della categoria corrispondente.
-  4. `normalize_k8slab_frontmatter(...)`: traduce al volo `type` -> `category`,
-     `last_updated` -> `updated` e rimuove il prefisso `#` dai tag.
-  5. `meta_write_lock(cfg, root)` + `atomic_write_text(path, content)`: file-locking esclusivo
-     con `fcntl.flock` su `wiki/_meta/.lock` e scrittura atomica (`tempfile` + `os.replace`).
+llmwiki.k8slab_dirs — Estensione multi-cartella, filtro piani attivi, normalizzazione
+frontmatter e file-locking atomico per k8s-lab (v0.9.1-k8slab).
 """
 
 from __future__ import annotations
@@ -34,9 +22,19 @@ CJK_SECTION_RE = re.compile(
     re.DOTALL,
 )
 
+# Categoria -> cartella di default se `paths.content_dirs` non è esplicitato
+DEFAULT_CONTENT_DIRS_ORDER = [
+    ("concept", "concepts"),
+    ("entity", "entities"),
+    ("pattern", "patterns"),
+    ("workflow", "workflows"),
+    ("procedure", "procedures"),
+    ("plan", "plans"),
+]
+
 
 def get_project_root(cfg: dict[str, Any] | None = None) -> Path:
-    """Risolve la root del progetto a partire da cfg['_root'], LLMWIKI_CONFIG o CWD."""
+    """Risolve la root del progetto a partire da cfg['_root'] o dalla CWD."""
     if cfg and isinstance(cfg.get("_root"), (str, Path)):
         return Path(cfg["_root"]).resolve()
     env_cfg = os.environ.get("LLMWIKI_CONFIG")
@@ -50,7 +48,7 @@ def get_project_root(cfg: dict[str, Any] | None = None) -> Path:
 def get_content_dirs(cfg: dict[str, Any], root: Path | None = None) -> dict[str, Path]:
     """
     Restituisce la mappa ordinata `{category: Path}` delle directory Markdown abilitate.
-    Se `paths.content_dirs` è presente in `config.yaml`, usa quelle directory;
+    Se `paths.content_dirs` è definito in `config.yaml`, usa esattamente quelle directory;
     altrimenti mantiene il fallback compatibile con upstream (`{"concept": paths.concepts}`).
     """
     base = root or get_project_root(cfg)
@@ -157,7 +155,8 @@ def iter_kb_markdown_files(
 ) -> list[Path]:
     """
     Scansiona deterministicamente tutte le cartelle configurate in `paths.content_dirs`
-    (più `paths.outputs` se `include_outputs=True`), filtrando i piani non attivi.
+    (più `paths.outputs` se `include_outputs=True`), filtrando i piani non attivi
+    ed evitando duplicati di slug.
     """
     base = root or get_project_root(cfg)
     content_dirs = get_content_dirs(cfg, base)
@@ -209,9 +208,12 @@ def resolve_slug_path(
     for_write: bool = False,
 ) -> Path:
     """
-    Risolve uno `slug` attraverso tutte le directory di `paths.content_dirs`.
-    Se il file esiste già, restituisce il Path reale; se non esiste (es. `kb_compile`),
-    lo indirizza nella directory corrispondente a `category` (default `paths.concepts`).
+    Risolve uno `slug` (con o senza `.md`) attraverso tutte le directory di `paths.content_dirs`:
+      1. Se il file esiste già in una delle `content_dirs` (e, se è un `plan`, è attivo),
+         restituisce il `Path` reale esistente.
+      2. Se `for_write=True` o il file non esiste ancora, lo indirizza nella cartella
+         corrispondente a `category` (es. `entity` -> `wiki/entities/<slug>.md`),
+         con fallback su `paths.concepts` (`wiki/concepts/<slug>.md`).
     """
     clean_slug = slug[:-3] if slug.endswith(".md") else slug
     clean_slug = Path(clean_slug).name
@@ -220,16 +222,19 @@ def resolve_slug_path(
     base = root or get_project_root(cfg)
     content_dirs = get_content_dirs(cfg, base)
 
+    # 1. Se category è specificata e il file esiste già lì, ritorna subito
     if category and category in content_dirs:
         candidate = content_dirs[category] / filename
         if candidate.is_file() and is_active_kb_document(candidate, category):
             return candidate
 
+    # 2. Cerca un file esistente in tutte le content_dirs nell'ordine dichiarato
     for cat, folder in content_dirs.items():
         candidate = folder / filename
         if candidate.is_file() and is_active_kb_document(candidate, cat):
             return candidate
 
+    # 3. Destinazione per nuovi file (o file non trovati)
     if category and category in content_dirs:
         target_dir = content_dirs[category]
         if for_write:
@@ -261,7 +266,10 @@ def strip_cjk_sections_if_bare_body(text: str, cfg: dict[str, Any] | None = None
 
 @contextlib.contextmanager
 def meta_write_lock(cfg: dict[str, Any], root: Path | None = None) -> Iterator[None]:
-    """Acquisisce un lock esclusivo (`fcntl.flock`) su `wiki/_meta/.lock`."""
+    """
+    Acquisisce un file-lock esclusivo (`fcntl.flock`) su `wiki/_meta/.lock`
+    per proteggere le scritture concorrenti.
+    """
     base = root or get_project_root(cfg)
     meta_rel = cfg.get("paths", {}).get("meta", "wiki/_meta")
     meta_dir = Path(meta_rel)
@@ -282,7 +290,10 @@ def atomic_write_text(
     content: str,
     encoding: str = "utf-8",
 ) -> None:
-    """Scrive `content` su `target_path` in modo atomico (`tempfile` + `os.replace`)."""
+    """
+    Scrive `content` su `target_path` in modo atomico usando un file temporaneo
+    nella stessa directory (stesso filesystem ZFS/APFS) seguito da `os.replace()`.
+    """
     target_path = Path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(

@@ -52,16 +52,18 @@ _CJK_LIKE_CHAR_RE = re.compile(f"[{_CJK_LIKE_RANGE}]")
 _CJK_LIKE_RUN_RE = re.compile(f"[{_CJK_LIKE_RANGE}]+")
 
 
-def search(query: str, top_k: int = 10, base_dir: Path | None = None) -> list[dict]:
+def search(query, top_k=10, base_dir: Path | None = None) -> list[dict]:
     """Search the wiki using TF-IDF-like scoring."""
-    cfg = load_config(base_dir)
-    concepts_dir = Path(cfg["paths"]["concepts"])
-    outputs_dir = Path(cfg["paths"]["outputs"])
+    if isinstance(query, dict):
+        cfg = query
+        query_text = str(top_k)
+        top_k_count = 10 if not isinstance(base_dir, int) else base_dir
+    else:
+        query_text = str(query)
+        top_k_count = int(top_k) if isinstance(top_k, (int, float)) else 10
+        cfg = load_config(base_dir)
 
-    if not concepts_dir.exists():
-        return []
-
-    query_terms = _tokenize(query)
+    query_terms = _tokenize(query_text)
     if not query_terms:
         return []
 
@@ -69,9 +71,10 @@ def search(query: str, top_k: int = 10, base_dir: Path | None = None) -> list[di
     docs = []
     for md_file in iter_kb_markdown_files(cfg, include_outputs=True):
         post = frontmatter.load(str(md_file))
-        title = post.metadata.get("title", md_file.stem)
-        summary = post.metadata.get("summary", "")
-        tags = " ".join(post.metadata.get("tags", []))
+        meta = normalize_k8slab_frontmatter(post.metadata, default_category="concept", slug=md_file.stem)
+        title = meta.get("title", md_file.stem)
+        summary = meta.get("summary", "")
+        tags = " ".join(meta.get("tags", []))
         text = f"{title} {title} {summary} {tags} {post.content}"  # title weighted 2x
         tokens = _tokenize(text)
         docs.append({
@@ -79,7 +82,7 @@ def search(query: str, top_k: int = 10, base_dir: Path | None = None) -> list[di
             "slug": md_file.stem,
             "title": title,
             "summary": summary,
-            "tags": post.metadata.get("tags", []),
+            "tags": meta.get("tags", []),
             "text": text,
             "tokens": tokens,
             "tokens_set": set(tokens),
@@ -121,7 +124,7 @@ def search(query: str, top_k: int = 10, base_dir: Path | None = None) -> list[di
             })
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:top_k]
+    return results[:top_k_count]
 
 
 def search_raw(query: str, top_k: int = 10, base_dir: Path | None = None) -> list[dict]:
