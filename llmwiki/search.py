@@ -1,3 +1,11 @@
+# === K8S-LAB FORK EXTENSION (v0.9.1-k8slab) ===
+from llmwiki.k8slab_dirs import (
+    iter_kb_markdown_files,
+    detect_category_for_path,
+    parse_markdown_frontmatter,
+    normalize_k8slab_frontmatter,
+)
+
 """Search engine: naive full-text search over the wiki with web UI and CLI."""
 
 import json
@@ -59,7 +67,7 @@ def search(query: str, top_k: int = 10, base_dir: Path | None = None) -> list[di
 
     # Build document corpus
     docs = []
-    for md_file in list(concepts_dir.glob("*.md")) + list(outputs_dir.glob("*.md")):
+    for md_file in iter_kb_markdown_files(cfg, include_outputs=True):
         post = frontmatter.load(str(md_file))
         title = post.metadata.get("title", md_file.stem)
         summary = post.metadata.get("summary", "")

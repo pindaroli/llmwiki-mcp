@@ -239,3 +239,29 @@ def _normalize_profile(name: str, profile: dict) -> dict:
         "single_section": single_section,
         "bare_body": single_section and sections[0]["header"] == "",
     }
+
+# === K8S-LAB FORK EXTENSION (v0.9.1-k8slab) ===
+from llmwiki.k8slab_dirs import (
+    get_content_dirs,
+    iter_kb_markdown_files,
+    resolve_slug_path,
+    normalize_k8slab_frontmatter,
+)
+
+_orig_defaults = globals().get("_defaults")
+if callable(_orig_defaults):
+    def _defaults():
+        d = _orig_defaults()
+        paths = d.setdefault("paths", {})
+        paths.setdefault(
+            "content_dirs",
+            {
+                "concept": paths.get("concepts", "wiki/concepts"),
+                "entity": "wiki/entities",
+                "pattern": "wiki/patterns",
+                "workflow": "wiki/workflows",
+                "procedure": "wiki/procedures",
+                "plan": "wiki/plans",
+            },
+        )
+        return d

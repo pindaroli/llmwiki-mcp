@@ -1,3 +1,10 @@
+# === K8S-LAB FORK EXTENSION (v0.9.1-k8slab) ===
+from llmwiki.k8slab_dirs import (
+    get_content_dirs,
+    iter_kb_markdown_files,
+    normalize_k8slab_frontmatter,
+)
+
 """Taxonomy — LLM-generated hierarchical categories from wiki articles.
 
 The taxonomy is NOT hardcoded. Instead, the LLM reads all article
@@ -129,7 +136,7 @@ def generate_taxonomy(base_dir: Path | None = None) -> dict:
 
     # Collect all article metadata
     articles = []
-    for md_file in sorted(concepts_dir.glob("*.md")):
+    for md_file in sorted(iter_kb_markdown_files(cfg)):
         post = frontmatter.load(str(md_file))
         articles.append({
             "slug": md_file.stem,
@@ -475,7 +482,7 @@ def assign_new_articles(base_dir: Path | None = None):
     _collect(categories)
 
     # Find unassigned articles
-    all_slugs = {f.stem for f in concepts_dir.glob("*.md")}
+    all_slugs = {f.stem for f in iter_kb_markdown_files(cfg)}
     unassigned = all_slugs - assigned
     if not unassigned:
         return
@@ -805,7 +812,7 @@ def _load_articles(concepts_dir: Path) -> list[dict]:
     articles = []
     if not concepts_dir.exists():
         return articles
-    for md_file in sorted(concepts_dir.glob("*.md")):
+    for md_file in sorted(iter_kb_markdown_files(cfg)):
         post = frontmatter.load(str(md_file))
         articles.append({
             "slug": md_file.stem,
@@ -821,7 +828,7 @@ def _build_title_map(concepts_dir: Path) -> dict[str, str]:
     title_map = {}
     if not concepts_dir.exists():
         return title_map
-    for md_file in concepts_dir.glob("*.md"):
+    for md_file in iter_kb_markdown_files(cfg):
         post = frontmatter.load(str(md_file))
         title_map[md_file.stem] = post.metadata.get("title", md_file.stem)
     return title_map

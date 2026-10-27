@@ -153,7 +153,7 @@ def _safe_concept_path(concepts_dir: Path, slug: str) -> Path | None:
     a sibling like ``concepts_evil`` (which ``startswith`` would falsely allow).
     """
     concepts_resolved = concepts_dir.resolve()
-    candidate = (concepts_dir / f"{slug}.md").resolve()
+    candidate = (resolve_slug_path(cfg, slug)).resolve()
     return candidate if candidate.is_relative_to(concepts_resolved) else None
 
 
@@ -238,7 +238,7 @@ def _op_list(base_dir: Path, tag: str | None = None) -> dict:
         return {"articles": []}
 
     articles = []
-    for md_file in sorted(concepts_dir.glob("*.md")):
+    for md_file in sorted(iter_kb_markdown_files(cfg)):
         post = frontmatter.load(str(md_file))
         tags = post.metadata.get("tags", [])
         if tag and tag not in tags:
@@ -278,12 +278,12 @@ def _op_stats(base_dir: Path) -> dict:
     raw_dir = Path(cfg["paths"]["raw"])
     outputs_dir = Path(cfg["paths"]["outputs"])
 
-    article_count = len(list(concepts_dir.glob("*.md"))) if concepts_dir.exists() else 0
+    article_count = len(iter_kb_markdown_files(cfg)) if concepts_dir.exists() else 0
     raw_count = len(list(raw_dir.glob("*"))) if raw_dir.exists() else 0
     output_count = len(list(outputs_dir.glob("*.md"))) if outputs_dir.exists() else 0
     total_words = 0
     if concepts_dir.exists():
-        for f in concepts_dir.glob("*.md"):
+        for f in iter_kb_markdown_files(cfg):
             total_words += len(f.read_text().split())
     return {
         "articles": article_count,
@@ -626,3 +626,28 @@ _CANONICAL: list[Operation] = [
 
 for _op in _CANONICAL:
     register(_op)
+
+# === K8S-LAB FORK EXTENSION (v0.9.1-k8slab) ===
+from llmwiki.k8slab_dirs import (
+    get_content_dirs,
+    iter_kb_markdown_files,
+    detect_category_for_path,
+    resolve_slug_path,
+    parse_markdown_frontmatter,
+    normalize_k8slab_frontmatter,
+    meta_write_lock,
+    atomic_write_text,
+)
+
+# Avvolge kb_rebuild_index, kb_compile, kb_file_answer, kb_ingest con il lock atomico su _meta/.lock
+for _mut_fn_name in ("kb_rebuild_index", "kb_compile", "kb_file_answer", "kb_ingest"):
+    _orig_mut_fn = globals().get(_mut_fn_name)
+    if callable(_orig_mut_fn):
+        def _make_locked_fn(_fn):
+            def _locked_wrapper(cfg, *args, **kwargs):
+                with meta_write_lock(cfg):
+                    return _fn(cfg, *args, **kwargs)
+            _locked_wrapper.__name__ = _fn.__name__
+            _locked_wrapper.__doc__ = _fn.__doc__
+            return _locked_wrapper
+        globals()[_mut_fn_name] = _make_locked_fn(_orig_mut_fn)
